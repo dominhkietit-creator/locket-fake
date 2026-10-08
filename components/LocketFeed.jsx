@@ -262,35 +262,8 @@ export default function LocketFeed({ user, onOpenChatWithUser }) {
 
       if (error) throw error;
 
-      // Xóa nội dung trong ô input
+      // Xóa nội dung trong ô input sau khi gửi thành công mà không làm gián đoạn trải nghiệm
       setReplyTexts((prev) => ({ ...prev, [post.id]: '' }));
-
-      const authorName = author.username || 'bạn bè';
-
-      if (Platform.OS === 'web' && typeof window !== 'undefined') {
-        const jump = window.confirm(
-          `Đã gửi tin nhắn trả lời tới ${authorName}! 💬\n\nBạn có muốn mở cuộc trò chuyện với ${authorName} ngay không?`
-        );
-        if (jump && onOpenChatWithUser) {
-          onOpenChatWithUser(post.user_id, authorName);
-        }
-      } else {
-        Alert.alert(
-          'Đã gửi tin nhắn! 💬',
-          `Tin nhắn đã được gửi tới ${authorName}.`,
-          [
-            { text: 'Ở lại Feed', style: 'cancel' },
-            {
-              text: 'Mở trò chuyện 👉',
-              onPress: () => {
-                if (onOpenChatWithUser) {
-                  onOpenChatWithUser(post.user_id, authorName);
-                }
-              },
-            },
-          ]
-        );
-      }
     } catch (err) {
       console.error('Send post reply error:', err);
       Alert.alert('Lỗi', err.message || 'Không thể gửi tin nhắn.');

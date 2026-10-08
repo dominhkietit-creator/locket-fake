@@ -279,18 +279,6 @@ export default function AuthScreen({ onAuthSuccess }) {
             </Text>
           </TouchableOpacity>
         </View>
-
-        {/* Hướng dẫn Supabase cho Developer */}
-        <View style={styles.helpCard}>
-          <Text style={styles.helpTitle}>💡 Lưu ý quan trọng khi đăng ký tài khoản:</Text>
-          <Text style={styles.helpText}>
-            Nếu gặp lỗi <Text style={{ color: '#FF453A', fontWeight: '700' }}>"email rate limit exceeded"</Text>:
-            {'\n'}1. Vào Supabase Dashboard ({'https://supabase.com/dashboard'}).
-            {'\n'}2. Chọn dự án <Text style={{ color: '#FFCC00' }}>idbeoxpdoshiprtjaxvu</Text>.
-            {'\n'}3. Vào <Text style={{ color: '#FFF', fontWeight: '700' }}>Authentication</Text> ➔ <Text style={{ color: '#FFF', fontWeight: '700' }}>Providers</Text> ➔ <Text style={{ color: '#FFF', fontWeight: '700' }}>Email</Text>.
-            {'\n'}4. Tắt tùy chọn <Text style={{ color: '#FFCC00', fontWeight: '700' }}>"Confirm email"</Text> rồi nhấn Save.
-          </Text>
-        </View>
       </ScrollView>
     </KeyboardAvoidingView>
   );
@@ -439,24 +427,5 @@ const styles = StyleSheet.create({
   highlightText: {
     color: '#FFCC00',
     fontWeight: '600',
-  },
-  helpCard: {
-    backgroundColor: '#141416',
-    borderRadius: 18,
-    padding: 16,
-    marginTop: 20,
-    borderWidth: 1,
-    borderColor: '#222224',
-  },
-  helpTitle: {
-    color: '#FFCC00',
-    fontSize: 13,
-    fontWeight: '700',
-    marginBottom: 6,
-  },
-  helpText: {
-    color: '#8E8E93',
-    fontSize: 12,
-    lineHeight: 18,
   },
 });

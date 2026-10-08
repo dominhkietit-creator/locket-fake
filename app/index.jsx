@@ -10,7 +10,7 @@ import {
 } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
-import { supabase, isSupabaseConfigured } from './supabase';
+import { supabase } from './supabase';
 
 import AuthScreen from '../components/AuthScreen';
 import Header from '../components/Header';
@@ -20,7 +20,7 @@ import LocketFeed from '../components/LocketFeed';
 import FriendChat from '../components/FriendChat';
 import FriendsScreen from '../components/FriendsScreen';
 import ProfileScreen from '../components/ProfileScreen';
-import { AlertTriangle, Sparkles } from 'lucide-react-native';
+import { Sparkles } from 'lucide-react-native';
 
 export default function LocketApp() {
   const [session, setSession] = useState(null);
@@ -29,7 +29,6 @@ export default function LocketApp() {
   const [loadingSession, setLoadingSession] = useState(true);
   const [currentTab, setCurrentTab] = useState('camera'); // 'camera' | 'feed' | 'chat' | 'friends' | 'profile'
   const [chatTarget, setChatTarget] = useState({ id: null, name: null });
-  const [showConfigNotice, setShowConfigNotice] = useState(!isSupabaseConfigured());
 
   // Fetch current user's profile from 'profiles' table, auto-create if missing
   const fetchUserProfile = useCallback(async (userId, userEmail) => {
@@ -99,22 +98,38 @@ export default function LocketApp() {
     };
   }, [fetchUserProfile]);
 
-  // Handle Logout
+  // Handle Logout (Cross-platform Web & Mobile)
   const handleLogout = async () => {
-    Alert.alert('Log Out', 'Are you sure you want to log out of Locket?', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Log Out',
-        style: 'destructive',
-        onPress: async () => {
-          try {
-            await supabase.auth.signOut();
-          } catch (err) {
-            Alert.alert('Logout Error', err.message);
-          }
+    const doLogout = async () => {
+      try {
+        setLoadingSession(true);
+        await supabase.auth.signOut();
+      } catch (err) {
+        console.warn('Sign out error:', err);
+      } finally {
+        setUser(null);
+        setSession(null);
+        setUserProfile(null);
+        setCurrentTab('camera');
+        setLoadingSession(false);
+      }
+    };
+
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      const confirmed = window.confirm('Bạn có chắc chắn muốn đăng xuất khỏi Locket không?');
+      if (confirmed) {
+        await doLogout();
+      }
+    } else {
+      Alert.alert('Đăng xuất', 'Bạn có chắc chắn muốn đăng xuất khỏi Locket không?', [
+        { text: 'Hủy', style: 'cancel' },
+        {
+          text: 'Đăng xuất',
+          style: 'destructive',
+          onPress: doLogout,
         },
-      },
-    ]);
+      ]);
+    }
   };
 
   // Switch to chat with a designated friend
@@ -143,14 +158,6 @@ export default function LocketApp() {
       <SafeAreaProvider>
         <SafeAreaView style={styles.safeContainer} edges={['top', 'left', 'right']}>
           <StatusBar style="light" />
-          {showConfigNotice && (
-            <View style={styles.configBanner}>
-              <AlertTriangle size={16} color="#000" />
-              <Text style={styles.configBannerText}>
-                Setup note: Replace SUPABASE_URL in app/supabase.js with your project URL.
-              </Text>
-            </View>
-          )}
           <AuthScreen
             onAuthSuccess={(authenticatedUser) => {
               setUser(authenticatedUser);
@@ -167,20 +174,6 @@ export default function LocketApp() {
     <SafeAreaProvider>
       <SafeAreaView style={styles.safeContainer} edges={['top', 'left', 'right']}>
         <StatusBar style="light" />
-
-        {/* Supabase Config Warning Banner if still placeholder */}
-        {showConfigNotice && (
-          <TouchableOpacity
-            style={styles.configBanner}
-            onPress={() => setShowConfigNotice(false)}
-            activeOpacity={0.8}
-          >
-            <AlertTriangle size={16} color="#000" />
-            <Text style={styles.configBannerText}>
-              Note: Update app/supabase.js with your actual Supabase URL. (Tap to dismiss)
-            </Text>
-          </TouchableOpacity>
-        )}
 
         {/* Global Header */}
         <Header
@@ -261,20 +254,6 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: '#FFFFFF',
     letterSpacing: -0.5,
-  },
-  configBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FFCC00',
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    gap: 8,
-  },
-  configBannerText: {
-    flex: 1,
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#000000',
   },
   screenBody: {
     flex: 1,
