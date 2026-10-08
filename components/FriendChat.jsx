@@ -5,6 +5,7 @@ import {
   TextInput,
   TouchableOpacity,
   FlatList,
+  ScrollView,
   StyleSheet,
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -20,55 +21,105 @@ export default function FriendChat({ user, initialFriendId = null, initialFriend
   const [inputText, setInputText] = useState('');
   const [sending, setSending] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [friends, setFriends] = useState([]);
+  const [conversations, setConversations] = useState([]);
   const [profiles, setProfiles] = useState({});
-  // activeRecipientId: null means "Locket Lounge (All Friends / Group)", or specific friend uuid
+  // activeRecipientId: null means "Locket Lounge (Group)", or specific friend uuid
   const [activeRecipientId, setActiveRecipientId] = useState(initialFriendId);
   const [activeRecipientName, setActiveRecipientName] = useState(initialFriendName);
 
-  // Sync if initial props change
+  // Sync when initial props change
   useEffect(() => {
-    if (initialFriendId !== undefined) {
+    if (initialFriendId) {
       setActiveRecipientId(initialFriendId);
-      setActiveRecipientName(initialFriendName);
+      if (initialFriendName) {
+        setActiveRecipientName(initialFriendName);
+      }
     }
   }, [initialFriendId, initialFriendName]);
 
-  // Fetch accepted friends list for chat tabs
-  const fetchFriends = useCallback(async () => {
+  // Fetch all conversation contacts: combining accepted friends and all users with message history
+  const fetchConversations = useCallback(async () => {
     if (!user || !user.id) return;
     try {
-      const { data, error } = await supabase
+      // 1. Lấy danh sách bạn bè đã kết bạn
+      const { data: friendsData } = await supabase
         .from('friends')
         .select('*')
         .eq('status', 'accepted')
         .or(`user_id.eq.${user.id},friend_id.eq.${user.id}`);
 
-      if (error) throw error;
+      // 2. Lấy danh sách tin nhắn gửi hoặc nhận của người dùng
+      const { data: userMessages } = await supabase
+        .from('messages')
+        .select('id, sender_id, receiver_id, text, created_at')
+        .or(`sender_id.eq.${user.id},receiver_id.eq.${user.id}`)
+        .order('id', { ascending: false });
 
-      const friendUserIds = (data || []).map((f) =>
-        f.user_id === user.id ? f.friend_id : f.user_id
-      );
+      // 3. Tập hợp tất cả các User ID liên quan
+      const contactIdsSet = new Set();
+      const lastMessageMap = {};
 
-      if (friendUserIds.length > 0) {
+      (userMessages || []).forEach((m) => {
+        const otherId = m.sender_id === user.id ? m.receiver_id : m.sender_id;
+        if (otherId && otherId !== user.id) {
+          contactIdsSet.add(otherId);
+          if (!lastMessageMap[otherId]) {
+            lastMessageMap[otherId] = m.text;
+          }
+        }
+      });
+
+      (friendsData || []).forEach((f) => {
+        const otherId = f.user_id === user.id ? f.friend_id : f.user_id;
+        if (otherId && otherId !== user.id) {
+          contactIdsSet.add(otherId);
+        }
+      });
+
+      if (initialFriendId && initialFriendId !== user.id) {
+        contactIdsSet.add(initialFriendId);
+      }
+
+      const contactIds = Array.from(contactIdsSet).filter(Boolean);
+
+      if (contactIds.length > 0) {
         const { data: profData, error: profError } = await supabase
           .from('profiles')
           .select('id, username, avatar_url')
-          .in('id', friendUserIds);
+          .in('id', contactIds);
 
         if (!profError && profData) {
-          setFriends(profData);
-          const map = {};
+          const formattedContacts = profData.map((p) => ({
+            ...p,
+            lastMessage: lastMessageMap[p.id] || null,
+          }));
+
+          setConversations(formattedContacts);
+
+          const profMap = {};
           profData.forEach((p) => {
-            map[p.id] = p;
+            profMap[p.id] = p;
           });
-          setProfiles((curr) => ({ ...curr, ...map }));
+          setProfiles((curr) => ({ ...curr, ...profMap }));
+
+          // Tự động mở cuộc trò chuyện gần nhất nếu chưa chọn cuộc trò chuyện nào
+          setActiveRecipientId((currId) => {
+            if (currId) return currId;
+            if (initialFriendId) return initialFriendId;
+            if (formattedContacts.length > 0) {
+              setActiveRecipientName(formattedContacts[0].username);
+              return formattedContacts[0].id;
+            }
+            return null;
+          });
         }
+      } else {
+        setConversations([]);
       }
     } catch (err) {
-      console.warn('Chat friends fetch error:', err.message);
+      console.warn('Chat conversations fetch error:', err.message);
     }
-  }, [user]);
+  }, [user, initialFriendId]);
 
   // Fetch messages for active conversation
   const fetchMessages = useCallback(async () => {
@@ -79,17 +130,17 @@ export default function FriendChat({ user, initialFriendId = null, initialFriend
       let query = supabase.from('messages').select('*');
 
       if (activeRecipientId) {
-        // Direct chat between user.id and activeRecipientId
+        // Direct chat giữa user và activeRecipientId
         query = query.or(
           `and(sender_id.eq.${user.id},receiver_id.eq.${activeRecipientId}),and(sender_id.eq.${activeRecipientId},receiver_id.eq.${user.id})`
         );
       } else {
-        // Group / Lounge chat (receiver_id is null)
+        // Chat phòng chung Locket Lounge (receiver_id is null)
         query = query.is('receiver_id', null);
       }
 
       // Order newest first for inverted FlatList
-      const { data, error } = await query.order('id', { ascending: false }).limit(60);
+      const { data, error } = await query.order('id', { ascending: false }).limit(100);
 
       if (error) throw error;
 
@@ -121,15 +172,15 @@ export default function FriendChat({ user, initialFriendId = null, initialFriend
   }, [user, activeRecipientId, profiles]);
 
   useEffect(() => {
-    fetchFriends();
-  }, [fetchFriends]);
+    fetchConversations();
+  }, [fetchConversations]);
 
   useEffect(() => {
     fetchMessages();
 
     // Supabase Realtime channel subscription on 'messages' table
     const chatChannel = supabase
-      .channel('public:messages-channel')
+      .channel(`public:messages-channel-${activeRecipientId || 'lounge'}`)
       .on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'messages' },
@@ -145,11 +196,10 @@ export default function FriendChat({ user, initialFriendId = null, initialFriend
           if (isCurrentConvo) {
             setMessages((prev) => {
               if (prev.some((m) => m.id === newMsg.id)) return prev;
-              // Inverted FlatList requires newest at index 0
               return [newMsg, ...prev];
             });
 
-            // Fetch profile if needed
+            // Fetch profile if missing
             if (newMsg.sender_id && !profiles[newMsg.sender_id] && newMsg.sender_id !== user?.id) {
               supabase
                 .from('profiles')
@@ -163,6 +213,11 @@ export default function FriendChat({ user, initialFriendId = null, initialFriend
                 });
             }
           }
+
+          // Cập nhật lại danh sách hội thoại nếu tin nhắn liên quan tới user
+          if (newMsg.sender_id === user?.id || newMsg.receiver_id === user?.id) {
+            fetchConversations();
+          }
         }
       )
       .subscribe();
@@ -170,7 +225,7 @@ export default function FriendChat({ user, initialFriendId = null, initialFriend
     return () => {
       supabase.removeChannel(chatChannel);
     };
-  }, [user, activeRecipientId, fetchMessages]);
+  }, [user, activeRecipientId, fetchMessages, fetchConversations]);
 
   // Send message
   const handleSendMessage = async () => {
@@ -312,63 +367,73 @@ export default function FriendChat({ user, initialFriendId = null, initialFriend
       style={styles.container}
     >
       {/* Channels & Friends Selector Bar */}
-      <View style={styles.selectorBar}>
-        <TouchableOpacity
-          style={[
-            styles.channelTab,
-            activeRecipientId === null && styles.channelTabActive,
-          ]}
-          onPress={() => {
-            setActiveRecipientId(null);
-            setActiveRecipientName(null);
-          }}
-          activeOpacity={0.7}
+      <View style={styles.selectorBarWrapper}>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.selectorBarContent}
         >
-          <Users size={16} color={activeRecipientId === null ? '#000' : '#8E8E93'} />
-          <Text
-            style={[
-              styles.channelTabText,
-              activeRecipientId === null && styles.channelTabTextActive,
-            ]}
-          >
-            Locket Lounge
-          </Text>
-        </TouchableOpacity>
-
-        {friends.map((f) => (
           <TouchableOpacity
-            key={f.id}
             style={[
               styles.channelTab,
-              activeRecipientId === f.id && styles.channelTabActive,
+              activeRecipientId === null && styles.channelTabActive,
             ]}
             onPress={() => {
-              setActiveRecipientId(f.id);
-              setActiveRecipientName(f.username);
+              setActiveRecipientId(null);
+              setActiveRecipientName(null);
             }}
             activeOpacity={0.7}
           >
-            <User size={16} color={activeRecipientId === f.id ? '#000' : '#8E8E93'} />
+            <Users size={16} color={activeRecipientId === null ? '#000' : '#8E8E93'} />
             <Text
               style={[
                 styles.channelTabText,
-                activeRecipientId === f.id && styles.channelTabTextActive,
+                activeRecipientId === null && styles.channelTabTextActive,
               ]}
-              numberOfLines={1}
             >
-              {f.username || 'Friend'}
+              Locket Lounge
             </Text>
           </TouchableOpacity>
-        ))}
+
+          {conversations.map((f) => (
+            <TouchableOpacity
+              key={f.id}
+              style={[
+                styles.channelTab,
+                activeRecipientId === f.id && styles.channelTabActive,
+              ]}
+              onPress={() => {
+                setActiveRecipientId(f.id);
+                setActiveRecipientName(f.username);
+              }}
+              activeOpacity={0.7}
+            >
+              {f.avatar_url ? (
+                <Image source={{ uri: f.avatar_url }} style={styles.tabAvatar} />
+              ) : (
+                <User size={16} color={activeRecipientId === f.id ? '#000' : '#8E8E93'} />
+              )}
+              <Text
+                style={[
+                  styles.channelTabText,
+                  activeRecipientId === f.id && styles.channelTabTextActive,
+                ]}
+                numberOfLines={1}
+              >
+                {f.username || 'Friend'}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
       </View>
 
       {/* Active Conversation Title Header */}
       <View style={styles.convoHeader}>
         <Text style={styles.convoTitle}>
-          {activeRecipientId ? `Chat with ${activeRecipientName || 'Friend'}` : '💬 Locket Lounge (All Friends)'}
+          {activeRecipientId ? `Chat với ${activeRecipientName || 'Bạn bè'}` : '💬 Locket Lounge (Kênh chung)'}
         </Text>
         <Text style={styles.convoSubtitle}>
-          {activeRecipientId ? 'Direct 1-on-1 Realtime Chat' : 'Live Group Chat'}
+          {activeRecipientId ? 'Nhắn tin trực tiếp Realtime' : 'Trò chuyện công khai giữa các thành viên'}
         </Text>
       </View>
 
@@ -376,7 +441,7 @@ export default function FriendChat({ user, initialFriendId = null, initialFriend
       {loading ? (
         <View style={styles.centerContainer}>
           <ActivityIndicator color="#FFCC00" size="large" />
-          <Text style={styles.loadingText}>Connecting to chat stream...</Text>
+          <Text style={styles.loadingText}>Đang tải lịch sử tin nhắn...</Text>
         </View>
       ) : (
         <FlatList
@@ -390,9 +455,11 @@ export default function FriendChat({ user, initialFriendId = null, initialFriend
               <View style={styles.emptyIconBox}>
                 <MessageCircle size={36} color="#FFCC00" />
               </View>
-              <Text style={styles.emptyTitle}>No Messages Yet</Text>
+              <Text style={styles.emptyTitle}>Chưa có tin nhắn nào</Text>
               <Text style={styles.emptySubtitle}>
-                Say hello to start the live conversation!
+                {activeRecipientId
+                  ? `Bắt đầu cuộc trò chuyện với ${activeRecipientName || 'bạn bè'} ngay bây giờ!`
+                  : 'Phòng chat chung Locket Lounge chưa có tin nhắn. Bạn hãy chọn bạn bè ở thanh trên hoặc nhắn tin vào đây!'}
               </Text>
             </View>
           }
@@ -403,7 +470,11 @@ export default function FriendChat({ user, initialFriendId = null, initialFriend
       <View style={styles.inputBar}>
         <TextInput
           style={styles.inputField}
-          placeholder={`Message ${activeRecipientName || 'everyone'}...`}
+          placeholder={
+            activeRecipientId
+              ? `Nhắn tin cho ${activeRecipientName || 'bạn bè'}...`
+              : 'Nhắn tin vào Locket Lounge...'
+          }
           placeholderTextColor="#666"
           value={inputText}
           onChangeText={setInputText}
@@ -437,14 +508,22 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#000000',
   },
-  selectorBar: {
-    flexDirection: 'row',
-    paddingHorizontal: 16,
-    paddingVertical: 10,
+  selectorBarWrapper: {
     backgroundColor: '#141416',
     borderBottomWidth: 1,
     borderBottomColor: '#2C2C2E',
+  },
+  selectorBarContent: {
+    flexDirection: 'row',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
     gap: 8,
+    alignItems: 'center',
+  },
+  tabAvatar: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
   },
   channelTab: {
     flexDirection: 'row',
