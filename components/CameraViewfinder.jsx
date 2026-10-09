@@ -24,6 +24,7 @@ import {
   Crop,
   Video,
   RefreshCw,
+  SwitchCamera,
 } from 'lucide-react-native';
 
 const { width } = Dimensions.get('window');
@@ -33,6 +34,9 @@ export default function CameraViewfinder({ user, onPostSuccess }) {
   const [selectedImage, setSelectedImage] = useState(null); // { uri, base64, blob }
   const [caption, setCaption] = useState('');
   const [uploading, setUploading] = useState(false);
+
+  // Chế độ camera: 'environment' (Camera sau) | 'user' (Camera trước)
+  const [cameraFacing, setCameraFacing] = useState('environment');
 
   // Trạng thái Trình cắt xén ảnh thủ công
   const [cropperVisible, setCropperVisible] = useState(false);
@@ -67,8 +71,8 @@ export default function CameraViewfinder({ user, onPostSuccess }) {
     setStartingWebcam(false);
   };
 
-  // Khởi động Webcam trên máy tính (hỗ trợ đa cấu hình thiết bị)
-  const startWebcam = async () => {
+  // Khởi động Camera (hỗ trợ Camera Sau 'environment' và Camera Trước 'user')
+  const startWebcam = async (facing = cameraFacing) => {
     if (Platform.OS !== 'web' || typeof navigator === 'undefined') {
       return false;
     }
@@ -84,40 +88,62 @@ export default function CameraViewfinder({ user, onPostSuccess }) {
     setStartingWebcam(true);
 
     try {
+      // Dừng stream cũ nếu đang chạy
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((track) => track.stop());
+        streamRef.current = null;
+      }
+
       let stream;
-      // Cố gắng mở webcam với các mức cấu hình từ chi tiết đến cơ bản
+      // Cố gắng mở với facingMode (environment: camera sau, user: camera trước)
       try {
         stream = await navigator.mediaDevices.getUserMedia({
-          video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+          video: {
+            facingMode: { ideal: facing },
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+          },
           audio: false,
         });
       } catch (err1) {
-        // Fallback: constraint cơ bản nhất
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: true,
-          audio: false,
-        });
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: facing },
+            audio: false,
+          });
+        } catch (err2) {
+          // Fallback: constraint cơ bản nhất
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: true,
+            audio: false,
+          });
+        }
       }
 
       streamRef.current = stream;
       setIsWebcamActive(true);
       setStartingWebcam(false);
 
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        videoRef.current.play().catch((e) => console.warn('Video play error:', e));
+      }
+
       return true;
     } catch (err) {
       console.warn('Webcam start error:', err);
       setStartingWebcam(false);
 
-      let msg = 'Không thể mở camera trên máy tính.';
+      let msg = 'Không thể mở camera trên thiết bị.';
       if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
         msg =
           'Quyền Camera bị từ chối 🔒!\n\n' +
           '👉 Cách mở lại quyền:\n' +
-          '1. Nhấp vào biểu tượng Ổ Khóa 🔒 (hoặc icon Camera gạch chéo) ở thanh địa chỉ URL góc trên của trình duyệt Chrome.\n' +
+          '1. Nhấp vào biểu tượng Ổ Khóa 🔒 ở thanh địa chỉ URL góc trên của trình duyệt Chrome.\n' +
           '2. Bật quyền "Camera" thành Cho phép (Allow).\n' +
           '3. Tải lại trang (F5) và bấm mở camera lại.';
       } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
-        msg = 'Không tìm thấy thiết bị Camera nào trên máy tính.';
+        msg = 'Không tìm thấy thiết bị Camera phù hợp.';
       } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
         msg =
           'Camera đang bị ứng dụng khác (Zoom, Google Meet, Teams, Camera app) chiếm dụng.\n\nVui lòng đóng các ứng dụng đó rồi thử lại.';
@@ -128,7 +154,17 @@ export default function CameraViewfinder({ user, onPostSuccess }) {
     }
   };
 
-  // Chụp ảnh từ Webcam máy tính -> Chuyển sang màn hình Cắt xén ảnh thủ công
+  // Đổi giữa Camera Sau và Camera Trước
+  const handleToggleCameraFacing = async () => {
+    const nextFacing = cameraFacing === 'user' ? 'environment' : 'user';
+    setCameraFacing(nextFacing);
+
+    if (isWebcamActive && Platform.OS === 'web') {
+      await startWebcam(nextFacing);
+    }
+  };
+
+  // Chụp ảnh từ Webcam -> Chuyển sang màn hình Cắt xén ảnh thủ công
   const captureFromWebcam = () => {
     if (!videoRef.current) return;
 
@@ -142,9 +178,11 @@ export default function CameraViewfinder({ user, onPostSuccess }) {
       canvas.height = vHeight;
       const ctx = canvas.getContext('2d');
 
-      // Lật gương để đúng góc nhìn thực tế
-      ctx.translate(vWidth, 0);
-      ctx.scale(-1, 1);
+      // Chỉ lật gương khi chụp bằng Camera trước (user)
+      if (cameraFacing === 'user') {
+        ctx.translate(vWidth, 0);
+        ctx.scale(-1, 1);
+      }
       ctx.drawImage(video, 0, 0, vWidth, vHeight);
 
       const fullDataUrl = canvas.toDataURL('image/jpeg', 0.95);
@@ -166,8 +204,8 @@ export default function CameraViewfinder({ user, onPostSuccess }) {
         // Đang bật camera -> Chụp hình ngay
         captureFromWebcam();
       } else {
-        // Chưa bật camera -> Kích hoạt webcam
-        await startWebcam();
+        // Chưa bật camera -> Kích hoạt camera với hướng đã chọn
+        await startWebcam(cameraFacing);
       }
     } else {
       // Mobile native camera
@@ -179,6 +217,10 @@ export default function CameraViewfinder({ user, onPostSuccess }) {
         }
 
         const result = await ImagePicker.launchCameraAsync({
+          cameraType:
+            cameraFacing === 'environment'
+              ? ImagePicker.CameraType.back
+              : ImagePicker.CameraType.front,
           quality: 0.9,
           base64: true,
         });
@@ -364,7 +406,7 @@ export default function CameraViewfinder({ user, onPostSuccess }) {
             </TouchableOpacity>
           </View>
         ) : isWebcamActive && Platform.OS === 'web' ? (
-          // Trình phát trực tiếp Webcam trên máy tính
+          // Trình phát trực tiếp Camera trên máy tính / điện thoại
           <View style={styles.webcamWrapper}>
             <video
               ref={(el) => {
@@ -381,19 +423,32 @@ export default function CameraViewfinder({ user, onPostSuccess }) {
                 width: '100%',
                 height: '100%',
                 objectFit: 'cover',
-                transform: 'scaleX(-1)', // Hiệu ứng gương
+                transform: cameraFacing === 'user' ? 'scaleX(-1)' : 'none', // Chỉ lật gương khi dùng camera trước
               }}
             />
             <View style={styles.webcamBadge}>
               <View style={styles.liveDot} />
-              <Text style={styles.webcamBadgeText}>Camera Live</Text>
+              <Text style={styles.webcamBadgeText}>
+                {cameraFacing === 'environment' ? 'Camera Sau' : 'Camera Trước'}
+              </Text>
             </View>
             <TouchableOpacity
               style={styles.closeWebcamBtn}
               onPress={stopWebcam}
               activeOpacity={0.8}
+              title="Đóng Camera"
             >
               <X size={18} color="#FFFFFF" />
+            </TouchableOpacity>
+
+            {/* Nút đổi camera trước/sau nhanh trong góc khung hình */}
+            <TouchableOpacity
+              style={styles.switchCamFloatingBtn}
+              onPress={handleToggleCameraFacing}
+              activeOpacity={0.8}
+              title={cameraFacing === 'environment' ? 'Chuyển sang Camera Trước' : 'Chuyển sang Camera Sau'}
+            >
+              <SwitchCamera size={18} color="#FFFFFF" />
             </TouchableOpacity>
           </View>
         ) : (
@@ -406,12 +461,25 @@ export default function CameraViewfinder({ user, onPostSuccess }) {
               Khoảnh khắc Widget Locket
             </Text>
 
+            {/* Nút chọn trước Camera Sau / Camera Trước */}
+            <TouchableOpacity
+              style={styles.cameraFacingPill}
+              onPress={handleToggleCameraFacing}
+              activeOpacity={0.8}
+              title="Bấm để đổi Camera Trước / Sau"
+            >
+              <SwitchCamera size={14} color="#FFCC00" />
+              <Text style={styles.cameraFacingPillText}>
+                {cameraFacing === 'environment' ? 'Camera Sau' : 'Camera Trước'}
+              </Text>
+            </TouchableOpacity>
+
             {/* Hai nút hành động rõ ràng cho người dùng */}
             <View style={styles.standbyButtonsRow}>
               {Platform.OS === 'web' && (
                 <TouchableOpacity
                   style={styles.quickActionBtn}
-                  onPress={startWebcam}
+                  onPress={() => startWebcam(cameraFacing)}
                   disabled={startingWebcam}
                   activeOpacity={0.8}
                 >
@@ -525,26 +593,25 @@ export default function CameraViewfinder({ user, onPostSuccess }) {
             />
           </TouchableOpacity>
 
-          {/* Nút tắt camera nếu đang bật webcam */}
-          {isWebcamActive ? (
-            <TouchableOpacity
-              style={styles.secondaryActionBtn}
-              onPress={stopWebcam}
-              activeOpacity={0.7}
-              title="Đóng Camera"
-            >
-              <X size={24} color="#FF453A" />
-            </TouchableOpacity>
-          ) : (
-            <TouchableOpacity
-              style={styles.secondaryActionBtn}
-              onPress={Platform.OS === 'web' ? startWebcam : handleTakePhoto}
-              activeOpacity={0.7}
-              title="Bật Camera"
-            >
-              <Camera size={24} color="#FFCC00" />
-            </TouchableOpacity>
-          )}
+          {/* Nút bên phải: Đổi giữa Camera Sau và Camera Trước */}
+          <TouchableOpacity
+            style={[
+              styles.secondaryActionBtn,
+              cameraFacing === 'environment' && styles.secondaryActionBtnActive,
+            ]}
+            onPress={handleToggleCameraFacing}
+            activeOpacity={0.7}
+            title={
+              cameraFacing === 'environment'
+                ? 'Đang bật Camera Sau - Bấm để chuyển Camera Trước'
+                : 'Đang bật Camera Trước - Bấm để chuyển Camera Sau'
+            }
+          >
+            <SwitchCamera
+              size={24}
+              color={cameraFacing === 'environment' ? '#FFCC00' : '#FFFFFF'}
+            />
+          </TouchableOpacity>
         </View>
       )}
     </View>
@@ -630,6 +697,19 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  switchCamFloatingBtn: {
+    position: 'absolute',
+    bottom: 14,
+    right: 14,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: 'rgba(0, 0, 0, 0.75)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.3)',
+  },
   liveDot: {
     width: 8,
     height: 8,
@@ -662,7 +742,24 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#FFFFFF',
     textAlign: 'center',
+    marginBottom: 10,
+  },
+  cameraFacingPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1C1C1E',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#3A3A3C',
+    gap: 6,
     marginBottom: 14,
+  },
+  cameraFacingPillText: {
+    color: '#FFCC00',
+    fontSize: 12,
+    fontWeight: '700',
   },
   standbyButtonsRow: {
     flexDirection: 'row',
@@ -772,6 +869,10 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     borderWidth: 1,
     borderColor: '#2C2C2E',
+  },
+  secondaryActionBtnActive: {
+    backgroundColor: '#2C2C2E',
+    borderColor: '#FFCC00',
   },
   shutterOuter: {
     width: 78,
