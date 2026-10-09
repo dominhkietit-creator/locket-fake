@@ -23,6 +23,9 @@ export default function FriendChat({ user, initialFriendId = null, initialFriend
   const [loading, setLoading] = useState(true);
   const [conversations, setConversations] = useState([]);
   const [profiles, setProfiles] = useState({});
+  const profilesRef = useRef({});
+  profilesRef.current = profiles;
+
   // activeRecipientId: null means "Locket Lounge (Group)", or specific friend uuid
   const [activeRecipientId, setActiveRecipientId] = useState(initialFriendId);
   const [activeRecipientName, setActiveRecipientName] = useState(initialFriendName);
@@ -102,7 +105,7 @@ export default function FriendChat({ user, initialFriendId = null, initialFriend
           });
           setProfiles((curr) => ({ ...curr, ...profMap }));
 
-          // Tự động mở cuộc trò chuyện gần nhất nếu chưa chọn cuộc trò chuyện nào
+          // Tự động mở cuộc trò chuyện gần nhất nếu chưa có ai được chọn
           setActiveRecipientId((currId) => {
             if (currId) return currId;
             if (initialFriendId) return initialFriendId;
@@ -119,12 +122,14 @@ export default function FriendChat({ user, initialFriendId = null, initialFriend
     } catch (err) {
       console.warn('Chat conversations fetch error:', err.message);
     }
-  }, [user, initialFriendId]);
+  }, [user?.id, initialFriendId]);
 
-  // Fetch messages for active conversation
-  const fetchMessages = useCallback(async () => {
+  // Fetch messages for active conversation (chỉ hiện loading xoay ở lần đầu vào chat)
+  const fetchMessages = useCallback(async (isInitial = false) => {
     if (!user || !user.id) return;
-    setLoading(true);
+    if (isInitial) {
+      setLoading(true);
+    }
 
     try {
       let query = supabase.from('messages').select('*');
@@ -146,9 +151,9 @@ export default function FriendChat({ user, initialFriendId = null, initialFriend
 
       setMessages(data || []);
 
-      // Fetch profiles for senders not yet in cache
+      // Fetch profiles cho người gửi chưa có trong cache
       const senderIds = [...new Set((data || []).map((m) => m.sender_id))];
-      const missingSenderIds = senderIds.filter((id) => !profiles[id] && id !== user.id);
+      const missingSenderIds = senderIds.filter((id) => !profilesRef.current[id] && id !== user.id);
 
       if (missingSenderIds.length > 0) {
         const { data: missingProfiles } = await supabase
@@ -167,18 +172,24 @@ export default function FriendChat({ user, initialFriendId = null, initialFriend
     } catch (err) {
       console.warn('Chat messages fetch error:', err.message);
     } finally {
-      setLoading(false);
+      if (isInitial) {
+        setLoading(false);
+      }
     }
-  }, [user, activeRecipientId, profiles]);
+  }, [user?.id, activeRecipientId]);
 
   useEffect(() => {
     fetchConversations();
   }, [fetchConversations]);
 
   useEffect(() => {
-    fetchMessages();
+    fetchMessages(true);
+  }, [fetchMessages]);
 
-    // Supabase Realtime channel subscription on 'messages' table
+  // Supabase Realtime channel subscription on 'messages' table
+  useEffect(() => {
+    if (!user?.id) return;
+
     const chatChannel = supabase
       .channel(`public:messages-channel-${activeRecipientId || 'lounge'}`)
       .on(
@@ -189,8 +200,8 @@ export default function FriendChat({ user, initialFriendId = null, initialFriend
 
           // Check if message belongs to current chat conversation
           const isCurrentConvo = activeRecipientId
-            ? (newMsg.sender_id === user?.id && newMsg.receiver_id === activeRecipientId) ||
-              (newMsg.sender_id === activeRecipientId && newMsg.receiver_id === user?.id)
+            ? (newMsg.sender_id === user.id && newMsg.receiver_id === activeRecipientId) ||
+              (newMsg.sender_id === activeRecipientId && newMsg.receiver_id === user.id)
             : newMsg.receiver_id === null;
 
           if (isCurrentConvo) {
@@ -200,7 +211,7 @@ export default function FriendChat({ user, initialFriendId = null, initialFriend
             });
 
             // Fetch profile if missing
-            if (newMsg.sender_id && !profiles[newMsg.sender_id] && newMsg.sender_id !== user?.id) {
+            if (newMsg.sender_id && !profilesRef.current[newMsg.sender_id] && newMsg.sender_id !== user.id) {
               supabase
                 .from('profiles')
                 .select('id, username, avatar_url')
@@ -214,8 +225,8 @@ export default function FriendChat({ user, initialFriendId = null, initialFriend
             }
           }
 
-          // Cập nhật lại danh sách hội thoại nếu tin nhắn liên quan tới user
-          if (newMsg.sender_id === user?.id || newMsg.receiver_id === user?.id) {
+          // Cập nhật lại danh sách hội thoại ngầm mà không làm reload màn hình
+          if (newMsg.sender_id === user.id || newMsg.receiver_id === user.id) {
             fetchConversations();
           }
         }
@@ -225,15 +236,22 @@ export default function FriendChat({ user, initialFriendId = null, initialFriend
     return () => {
       supabase.removeChannel(chatChannel);
     };
-  }, [user, activeRecipientId, fetchMessages, fetchConversations]);
+  }, [user?.id, activeRecipientId, fetchConversations]);
 
   // Send message
-  const handleSendMessage = async () => {
+  const handleSendMessage = async (e) => {
+    if (e && typeof e.preventDefault === 'function') {
+      e.preventDefault();
+    }
     const textToSend = inputText.trim();
     if (!textToSend) return;
 
     if (!user || !user.id) {
-      Alert.alert('Sign in required', 'Please log in to send messages.');
+      if (Platform.OS === 'web' && typeof window !== 'undefined') {
+        window.alert('Vui lòng đăng nhập để gửi tin nhắn.');
+      } else {
+        Alert.alert('Sign in required', 'Please log in to send messages.');
+      }
       return;
     }
 
@@ -255,7 +273,7 @@ export default function FriendChat({ user, initialFriendId = null, initialFriend
 
       if (error) throw error;
 
-      // Optimistically ensure message is rendered if realtime is delayed
+      // Optimistically hiển thị tin nhắn ngay lập tức mà không reload trang hay xoay spinner
       if (data) {
         setMessages((prev) => {
           if (prev.some((m) => m.id === data.id)) return prev;
@@ -263,7 +281,13 @@ export default function FriendChat({ user, initialFriendId = null, initialFriend
         });
       }
     } catch (err) {
-      Alert.alert('Error', err.message || 'Could not send message.');
+      console.error('Send message error:', err);
+      setInputText(textToSend); // Khôi phục lại chữ nếu lỗi
+      if (Platform.OS === 'web' && typeof window !== 'undefined') {
+        window.alert('Lỗi: ' + (err.message || 'Không thể gửi tin nhắn.'));
+      } else {
+        Alert.alert('Error', err.message || 'Could not send message.');
+      }
     } finally {
       setSending(false);
     }
@@ -480,7 +504,16 @@ export default function FriendChat({ user, initialFriendId = null, initialFriend
           onChangeText={setInputText}
           multiline={false}
           returnKeyType="send"
-          onSubmitEditing={handleSendMessage}
+          onSubmitEditing={(e) => {
+            e?.preventDefault?.();
+            handleSendMessage(e);
+          }}
+          onKeyPress={(e) => {
+            if (e.nativeEvent?.key === 'Enter') {
+              e.preventDefault?.();
+              handleSendMessage(e);
+            }
+          }}
         />
 
         <TouchableOpacity
@@ -488,7 +521,10 @@ export default function FriendChat({ user, initialFriendId = null, initialFriend
             styles.sendButton,
             (!inputText.trim() || sending) && styles.sendButtonDisabled,
           ]}
-          onPress={handleSendMessage}
+          onPress={(e) => {
+            e?.preventDefault?.();
+            handleSendMessage(e);
+          }}
           disabled={!inputText.trim() || sending}
           activeOpacity={0.8}
         >

@@ -236,12 +236,19 @@ export default function LocketFeed({ user, onOpenChatWithUser }) {
   };
 
   // Gửi tin nhắn trả lời bài đăng của bạn bè (Reply to post via messaging)
-  const handleSendPostReply = async (post, author) => {
+  const handleSendPostReply = async (post, author, e) => {
+    if (e && typeof e.preventDefault === 'function') {
+      e.preventDefault();
+    }
     const rawText = (replyTexts[post.id] || '').trim();
     if (!rawText) return;
 
     if (!user || !user.id) {
-      Alert.alert('Chưa đăng nhập', 'Vui lòng đăng nhập để gửi tin nhắn trả lời.');
+      if (Platform.OS === 'web' && typeof window !== 'undefined') {
+        window.alert('Vui lòng đăng nhập để gửi tin nhắn trả lời.');
+      } else {
+        Alert.alert('Chưa đăng nhập', 'Vui lòng đăng nhập để gửi tin nhắn trả lời.');
+      }
       return;
     }
 
@@ -250,6 +257,9 @@ export default function LocketFeed({ user, onOpenChatWithUser }) {
     try {
       const postSnippet = post.caption ? `"${post.caption}"` : 'ảnh khoảnh khắc';
       const formattedMessage = `📷 [Trả lời ${postSnippet}]: ${rawText}`;
+
+      // Xóa nội dung trong ô input ngay lập tức mà không làm gián đoạn hay reload trang
+      setReplyTexts((prev) => ({ ...prev, [post.id]: '' }));
 
       // Gửi tin nhắn vào bảng messages tới đúng tác giả của bài đăng
       const { error } = await supabase.from('messages').insert([
@@ -261,12 +271,14 @@ export default function LocketFeed({ user, onOpenChatWithUser }) {
       ]);
 
       if (error) throw error;
-
-      // Xóa nội dung trong ô input sau khi gửi thành công mà không làm gián đoạn trải nghiệm
-      setReplyTexts((prev) => ({ ...prev, [post.id]: '' }));
     } catch (err) {
       console.error('Send post reply error:', err);
-      Alert.alert('Lỗi', err.message || 'Không thể gửi tin nhắn.');
+      setReplyTexts((prev) => ({ ...prev, [post.id]: rawText }));
+      if (Platform.OS === 'web' && typeof window !== 'undefined') {
+        window.alert('Lỗi: ' + (err.message || 'Không thể gửi tin nhắn.'));
+      } else {
+        Alert.alert('Lỗi', err.message || 'Không thể gửi tin nhắn.');
+      }
     } finally {
       setSendingReplyId(null);
     }
@@ -454,7 +466,16 @@ export default function LocketFeed({ user, onOpenChatWithUser }) {
                   setReplyTexts((prev) => ({ ...prev, [item.id]: text }))
                 }
                 returnKeyType="send"
-                onSubmitEditing={() => handleSendPostReply(item, author)}
+                onSubmitEditing={(e) => {
+                  e?.preventDefault?.();
+                  handleSendPostReply(item, author, e);
+                }}
+                onKeyPress={(e) => {
+                  if (e.nativeEvent?.key === 'Enter') {
+                    e.preventDefault?.();
+                    handleSendPostReply(item, author, e);
+                  }
+                }}
               />
               <TouchableOpacity
                 style={[
@@ -462,7 +483,10 @@ export default function LocketFeed({ user, onOpenChatWithUser }) {
                   (!replyTexts[item.id]?.trim() || sendingReplyId === item.id) &&
                     styles.replySendBtnDisabled,
                 ]}
-                onPress={() => handleSendPostReply(item, author)}
+                onPress={(e) => {
+                  e?.preventDefault?.();
+                  handleSendPostReply(item, author, e);
+                }}
                 disabled={!replyTexts[item.id]?.trim() || sendingReplyId === item.id}
                 activeOpacity={0.8}
               >
